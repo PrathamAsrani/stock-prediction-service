@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  stock-ml-service:
+    build: .
+    container_name: stock-ml-service
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./trained_models:/app/trained_models
+      - ./data:/app/data
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    networks:
+      - stock-network
+
+networks:
+  stock-network:
+    driver: bridge
