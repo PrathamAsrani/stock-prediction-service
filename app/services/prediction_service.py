@@ -11,191 +11,223 @@ from app.schemas.prediction_schema import (
     TechnicalIndicators,
     CandleData
 )
-from app.models.ml_model import StockPredictionModel
-from app.models.technical_analysis import TechnicalAnalyzer
-from app.models.fundamental_analysis import FundamentalAnalyzer
+from app.models.ensemble_model import EnsembleModel
+from app.features.technical_features import TechnicalAnalyzer
 from app.services.data_service import DataService
+from app.services.rag_service import RAGService
+from app.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
 class StockPredictionService:
-    """Service for stock prediction and analysis"""
+    """Enhanced prediction service with ensemble model and RAG"""
     
     def __init__(self):
-        self.model = StockPredictionModel(model_type="xgboost")
+        self.ensemble_model = EnsembleModel(
+            use_xgboost=settings.ENABLE_XGBOOST,
+            use_lstm=settings.ENABLE_LSTM,
+            use_transformer=settings.ENABLE_TRANSFORMER
+        )
         self.data_service = DataService()
-        self.fundamental_analyzer = FundamentalAnalyzer()
+        self.rag_service = RAGService()
         
-        # Try to load pre-trained model
+        # Load trained model
         try:
-            self.model.load_model()
-            logger.info("Pre-trained model loaded successfully")
+            self.ensemble_model.load()
+            logger.info("✓ Ensemble model loaded successfully")
         except FileNotFoundError:
-            logger.warning("No pre-trained model found. Model needs to be trained first.")
+            logger.warning("⚠ No trained model found. Please train the model first.")
     
     async def predict_stock_growth(self, request: PredictionRequest) -> PredictionResponse:
         """
-        Main prediction function
+        Main prediction function with RAG-enhanced analysis
         
-        Analyzes stock and predicts if it will grow by target percentage in given days
+        Analyzes stock using:
+        1. Ensemble ML predictions (XGBoost + LSTM + Transformer)
+        2. Technical analysis
+        3. Knowledge base insights (books, reports, patterns)
+        4. Historical pattern matching
         """
-        logger.info(f"Starting prediction for {request.symbol}")
+        logger.info(f"Starting enhanced prediction for {request.symbol}")
         
-        # Fetch historical data if not provided
-        if request.historical_data is None or len(request.historical_data) == 0:
-            logger.info(f"Fetching historical data for {request.symbol}")
-            candles = self.data_service.fetch_historical_data(
+        try:
+            # Step 1: Fetch or use provided historical data
+            candles = await self._get_historical_data(request)
+            
+            # Step 2: Calculate technical indicators
+            technical_indicators = TechnicalAnalyzer.calculate_indicators(candles)
+            
+            # Step 3: Prepare features for ML model
+            df = self.data_service.candles_to_dataframe(candles)
+            df = TechnicalAnalyzer.calculate_features(df)
+            
+            # Step 4: Get RAG insights from knowledge base
+            logger.info("Retrieving insights from knowledge base...")
+            rag_insights = self.rag_service.get_trading_insights(
+                symbol=request.symbol,
+                query="swing trading strategy analysis",
+                include_patterns=True,
+                include_fundamentals=True
+            )
+            
+            # Step 5: Get swing trading strategy
+            trading_strategy = self.rag_service.get_swing_trading_strategy(request.symbol)
+            
+            # Step 6: Make ensemble prediction
+            logger.info("Making ensemble prediction...")
+            features = self.ensemble_model.base_models['xgboost'].prepare_features(df)
+            features_latest = features.tail(1)
+            
+            # Get detailed prediction breakdown
+            prediction_breakdown = self.ensemble_model.predict_with_breakdown(
+                features_latest,
+                symbols=[request.symbol]
+            )
+            
+            # Extract ensemble prediction
+            ensemble_pred = prediction_breakdown['ensemble_prediction']
+            ensemble_prob = prediction_breakdown['ensemble_probability']
+            
+            # Step 7: Calculate metrics
+            current_price = df['close'].iloc[-1]
+            volatility = df['volatility'].iloc[-1] if 'volatility' in df.columns else 0.02
+            
+            # Predicted return based on ensemble confidence
+            if ensemble_pred == 1:
+                predicted_return = request.target_growth + (ensemble_prob - 0.5) * 10
+            else:
+                predicted_return = -(request.target_growth * (1 - ensemble_prob))
+            
+            target_price = current_price * (1 + predicted_return / 100)
+            
+            # Step 8: Calculate comprehensive risk score
+            risk_score = self._calculate_enhanced_risk_score(
+                volatility=volatility,
+                technical_indicators=technical_indicators,
+                confidence=ensemble_prob,
+                rag_insights=rag_insights,
+                prediction_breakdown=prediction_breakdown
+            )
+            
+            # Step 9: Generate recommendation
+            recommendation = self._generate_enhanced_recommendation(
+                prediction=ensemble_pred,
+                confidence=ensemble_prob,
+                risk_score=risk_score,
+                technical_indicators=technical_indicators,
+                rag_insights=rag_insights
+            )
+            
+            # Step 10: Calculate stop loss
+            stop_loss = self._calculate_stop_loss(
+                current_price=current_price,
+                atr=technical_indicators.atr,
+                volatility=volatility
+            )
+            
+            # Step 11: Generate comprehensive reasons and warnings
+            reasons, warnings = self._generate_enhanced_insights(
+                prediction=ensemble_pred,
+                confidence=ensemble_prob,
+                technical_indicators=technical_indicators,
+                risk_score=risk_score,
+                df=df,
+                rag_insights=rag_insights,
+                prediction_breakdown=prediction_breakdown,
+                trading_strategy=trading_strategy
+            )
+            
+            # Step 12: Calculate sentiment score from knowledge base
+            sentiment_score = self._calculate_sentiment_score(rag_insights)
+            
+            # Create prediction result
+            prediction_result = PredictionResult(
+                will_grow_10_percent=(ensemble_pred == 1),
+                confidence=ensemble_prob,
+                predicted_return=predicted_return,
+                risk_score=risk_score,
+                volatility=volatility,
+                recommendation=recommendation
+            )
+            
+            # Create comprehensive response
+            response = PredictionResponse(
                 symbol=request.symbol,
                 exchange=request.exchange,
-                days=365
+                prediction=prediction_result,
+                technical_indicators=technical_indicators,
+                fundamental_score=None,  # Can be enhanced with fundamental data
+                sentiment_score=sentiment_score,
+                current_price=current_price,
+                target_price=target_price,
+                stop_loss=stop_loss,
+                analysis_timestamp=datetime.now(),
+                reasons=reasons,
+                warnings=warnings
             )
             
-            if candles is None or len(candles) == 0:
-                raise ValueError(f"Could not fetch historical data for {request.symbol}")
-        else:
-            candles = request.historical_data
-        
-        # Convert to DataFrame
-        df = self.data_service.candles_to_dataframe(candles)
-        
-        # Calculate technical indicators
-        logger.info("Calculating technical indicators")
-        technical_indicators = TechnicalAnalyzer.calculate_indicators(candles)
-        
-        # Add features to dataframe
-        df = TechnicalAnalyzer.calculate_features(df)
-        
-        # Fetch fundamental data if not provided
-        fundamental_data = request.fundamental_data
-        if fundamental_data is None:
-            logger.info("Fetching fundamental data")
-            fundamental_data = self.fundamental_analyzer.fetch_fundamentals(
-                request.symbol,
-                request.exchange
-            )
-        
-        # Calculate fundamental score
-        fundamental_score = None
-        if fundamental_data is not None:
-            fundamental_score = self.fundamental_analyzer.calculate_fundamental_score(fundamental_data)
-            logger.info(f"Fundamental score: {fundamental_score:.4f}")
+            logger.info(f"✓ Prediction complete: {recommendation} (confidence: {ensemble_prob:.2%})")
             
-            # Add fundamental features to dataframe
-            df['pe_ratio'] = fundamental_data.pe_ratio
-            df['pb_ratio'] = fundamental_data.pb_ratio
-            df['roe'] = fundamental_data.roe
-            df['debt_to_equity'] = fundamental_data.debt_to_equity
-            df['dividend_yield'] = fundamental_data.dividend_yield
+            return response
+            
+        except Exception as e:
+            logger.error(f"Error in prediction: {str(e)}")
+            raise
+    
+    async def _get_historical_data(self, request: PredictionRequest) -> List[CandleData]:
+        """Get historical data from request or fetch from API"""
         
-        # Make ML prediction
-        logger.info("Making ML prediction")
-        features = self.model.prepare_features(df)
-        prediction, confidence = self.model.predict(features.tail(1))
+        if request.historical_data and len(request.historical_data) > 0:
+            logger.info(f"Using provided historical data: {len(request.historical_data)} candles")
+            return request.historical_data
         
-        # Calculate additional metrics
-        current_price = df['close'].iloc[-1]
-        volatility = df['volatility'].iloc[-1]
-        
-        # Calculate predicted return and target price
-        if prediction == 1:
-            predicted_return = request.target_growth + (confidence - 0.5) * 5  # Adjust based on confidence
-        else:
-            predicted_return = -(request.target_growth * (1 - confidence))
-        
-        target_price = current_price * (1 + predicted_return / 100)
-        
-        # Calculate risk score (0-1, higher = riskier)
-        risk_score = self._calculate_risk_score(
-            volatility=volatility,
-            technical_indicators=technical_indicators,
-            fundamental_score=fundamental_score,
-            confidence=confidence
-        )
-        
-        # Generate recommendation
-        recommendation = self._generate_recommendation(
-            prediction=prediction,
-            confidence=confidence,
-            risk_score=risk_score,
-            technical_indicators=technical_indicators
-        )
-        
-        # Calculate stop loss (5% below current price or based on ATR)
-        atr_multiplier = 2.0
-        stop_loss = current_price - (technical_indicators.atr * atr_multiplier)
-        stop_loss = max(stop_loss, current_price * 0.95)  # At least 5% stop loss
-        
-        # Generate reasons and warnings
-        reasons, warnings = self._generate_insights(
-            prediction=prediction,
-            confidence=confidence,
-            technical_indicators=technical_indicators,
-            fundamental_score=fundamental_score,
-            risk_score=risk_score,
-            df=df
-        )
-        
-        # Create prediction result
-        prediction_result = PredictionResult(
-            will_grow_10_percent=(prediction == 1),
-            confidence=confidence,
-            predicted_return=predicted_return,
-            risk_score=risk_score,
-            volatility=volatility,
-            recommendation=recommendation
-        )
-        
-        # Create response
-        response = PredictionResponse(
+        logger.info(f"Fetching historical data for {request.symbol}")
+        candles = self.data_service.fetch_historical_data(
             symbol=request.symbol,
             exchange=request.exchange,
-            prediction=prediction_result,
-            technical_indicators=technical_indicators,
-            fundamental_score=fundamental_score,
-            sentiment_score=None,  # Can be added later with news sentiment analysis
-            current_price=current_price,
-            target_price=target_price,
-            stop_loss=stop_loss,
-            analysis_timestamp=datetime.now(),
-            reasons=reasons,
-            warnings=warnings
+            days=365
         )
         
-        logger.info(f"Prediction complete for {request.symbol}: {recommendation}")
+        if not candles or len(candles) == 0:
+            raise ValueError(f"Could not fetch historical data for {request.symbol}")
         
-        return response
+        return candles
     
-    def _calculate_risk_score(
+    def _calculate_enhanced_risk_score(
         self,
         volatility: float,
         technical_indicators: TechnicalIndicators,
-        fundamental_score: Optional[float],
-        confidence: float
+        confidence: float,
+        rag_insights: Dict,
+        prediction_breakdown: Dict
     ) -> float:
-        """Calculate overall risk score (0-1)"""
+        """Calculate comprehensive risk score using all available information"""
         
         risk_components = []
         
-        # Volatility risk (higher volatility = higher risk)
-        volatility_risk = min(1.0, volatility / 0.05)  # Normalize around 5% volatility
-        risk_components.append(('volatility', volatility_risk, 0.3))
+        # 1. Volatility risk (30% weight)
+        volatility_risk = min(1.0, volatility / 0.05)
+        risk_components.append(('volatility', volatility_risk, 0.30))
         
-        # RSI risk (extreme values = higher risk)
+        # 2. Technical indicator risk (25% weight)
         rsi = technical_indicators.rsi
-        if rsi > 70 or rsi < 30:
-            rsi_risk = abs(rsi - 50) / 50
-        else:
-            rsi_risk = 0.3
-        risk_components.append(('rsi', rsi_risk, 0.15))
+        rsi_risk = abs(rsi - 50) / 50 if rsi > 70 or rsi < 30 else 0.3
+        risk_components.append(('technical', rsi_risk, 0.25))
         
-        # Confidence risk (lower confidence = higher risk)
+        # 3. Model confidence risk (25% weight)
         confidence_risk = 1 - confidence
         risk_components.append(('confidence', confidence_risk, 0.25))
         
-        # Fundamental risk (if available)
-        if fundamental_score is not None:
-            fundamental_risk = 1 - fundamental_score
-            risk_components.append(('fundamental', fundamental_risk, 0.30))
+        # 4. Historical pattern risk (20% weight)
+        pattern_risk = 0.5  # Default
+        if rag_insights['pattern_insights']:
+            bearish_count = sum(
+                1 for p in rag_insights['pattern_insights']
+                if p.get('outcome') == 'bearish'
+            )
+            total_patterns = len(rag_insights['pattern_insights'])
+            pattern_risk = bearish_count / total_patterns if total_patterns > 0 else 0.5
+        risk_components.append(('patterns', pattern_risk, 0.20))
         
         # Calculate weighted average
         total_weight = sum(weight for _, _, weight in risk_components)
@@ -203,151 +235,233 @@ class StockPredictionService:
         
         return min(1.0, max(0.0, risk_score))
     
-    def _generate_recommendation(
+    def _generate_enhanced_recommendation(
         self,
         prediction: int,
         confidence: float,
         risk_score: float,
-        technical_indicators: TechnicalIndicators
+        technical_indicators: TechnicalIndicators,
+        rag_insights: Dict
     ) -> str:
-        """Generate BUY/HOLD/SELL recommendation"""
+        """Generate trading recommendation using ensemble and RAG insights"""
         
-        if prediction == 1 and confidence >= 0.7 and risk_score < 0.5:
+        # Strong buy conditions
+        if (prediction == 1 and 
+            confidence >= 0.75 and 
+            risk_score < 0.4 and
+            technical_indicators.rsi < 70):
+            return "STRONG BUY"
+        
+        # Buy conditions
+        elif (prediction == 1 and 
+              confidence >= 0.65 and 
+              risk_score < 0.6):
             return "BUY"
-        elif prediction == 1 and confidence >= 0.6:
-            return "HOLD"
-        elif prediction == 0 and confidence >= 0.7:
+        
+        # Strong sell conditions
+        elif (prediction == 0 and 
+              confidence >= 0.75 and
+              technical_indicators.rsi > 70):
+            return "STRONG SELL"
+        
+        # Sell conditions
+        elif (prediction == 0 and 
+              confidence >= 0.65):
             return "SELL"
+        
+        # Default to hold
         else:
             return "HOLD"
     
-    def _generate_insights(
+    def _calculate_stop_loss(
+        self,
+        current_price: float,
+        atr: float,
+        volatility: float
+    ) -> float:
+        """Calculate intelligent stop loss"""
+        
+        # Use ATR-based stop loss
+        atr_multiplier = 2.0
+        atr_stop = current_price - (atr * atr_multiplier)
+        
+        # Use volatility-based stop loss
+        vol_stop = current_price * (1 - 3 * volatility)
+        
+        # Use the more conservative (higher) stop loss
+        stop_loss = max(atr_stop, vol_stop)
+        
+        # Ensure at least 5% stop loss
+        min_stop = current_price * 0.95
+        stop_loss = max(stop_loss, min_stop)
+        
+        return stop_loss
+    
+    def _generate_enhanced_insights(
         self,
         prediction: int,
         confidence: float,
         technical_indicators: TechnicalIndicators,
-        fundamental_score: Optional[float],
         risk_score: float,
-        df: pd.DataFrame
+        df: pd.DataFrame,
+        rag_insights: Dict,
+        prediction_breakdown: Dict,
+        trading_strategy: Dict
     ) -> tuple:
-        """Generate reasons for prediction and risk warnings"""
+        """Generate comprehensive reasons and warnings using all available data"""
         
         reasons = []
         warnings = []
         
-        # Technical reasons
-        if technical_indicators.rsi < 30:
-            reasons.append("RSI indicates oversold condition - potential buying opportunity")
-        elif technical_indicators.rsi > 70:
-            warnings.append("RSI indicates overbought condition - potential correction ahead")
+        # === MODEL INSIGHTS ===
+        ensemble_conf = prediction_breakdown['ensemble_probability']
+        reasons.append(f"Ensemble model confidence: {ensemble_conf:.1%}")
+        
+        # Individual model insights
+        for model_name, pred_data in prediction_breakdown['base_predictions'].items():
+            prob = pred_data.get('probability', 0)
+            if prob:
+                reasons.append(
+                    f"{model_name.upper()} model: {prob:.1%} confidence"
+                )
+        
+        # === TECHNICAL INSIGHTS ===
+        rsi = technical_indicators.rsi
+        if rsi < 30:
+            reasons.append("🔵 RSI indicates oversold condition (strong buying opportunity)")
+        elif rsi > 70:
+            warnings.append("🔴 RSI indicates overbought condition (potential correction)")
+        elif 40 <= rsi <= 60:
+            reasons.append("✓ RSI in neutral zone (healthy momentum)")
         
         if technical_indicators.macd > technical_indicators.macd_signal:
-            reasons.append("MACD crossed above signal line - bullish momentum")
+            reasons.append("📈 MACD bullish crossover detected")
         elif technical_indicators.macd < technical_indicators.macd_signal:
-            warnings.append("MACD crossed below signal line - bearish momentum")
+            warnings.append("📉 MACD bearish crossover detected")
         
         current_price = df['close'].iloc[-1]
         if current_price > technical_indicators.sma_50:
-            reasons.append("Price above 50-day SMA - uptrend confirmed")
+            reasons.append(f"✓ Price above 50-day SMA (${technical_indicators.sma_50:.2f}) - uptrend")
         else:
-            warnings.append("Price below 50-day SMA - downtrend signal")
+            warnings.append(f"⚠ Price below 50-day SMA (${technical_indicators.sma_50:.2f}) - downtrend")
         
-        # Fundamental reasons
-        if fundamental_score is not None:
-            if fundamental_score > 0.7:
-                reasons.append("Strong fundamentals support long-term growth")
-            elif fundamental_score < 0.4:
-                warnings.append("Weak fundamentals may limit growth potential")
+        # === KNOWLEDGE BASE INSIGHTS ===
+        # Pattern insights
+        if rag_insights['pattern_insights']:
+            bullish_patterns = [p for p in rag_insights['pattern_insights'] if p.get('outcome') == 'bullish']
+            bearish_patterns = [p for p in rag_insights['pattern_insights'] if p.get('outcome') == 'bearish']
+            
+            if len(bullish_patterns) > len(bearish_patterns):
+                reasons.append(
+                    f"📊 Historical analysis: {len(bullish_patterns)} bullish vs {len(bearish_patterns)} bearish patterns"
+                )
+            elif len(bearish_patterns) > len(bullish_patterns):
+                warnings.append(
+                    f"📊 Historical analysis: {len(bearish_patterns)} bearish vs {len(bullish_patterns)} bullish patterns"
+                )
         
-        # Risk warnings
+        # Book insights
+        if rag_insights['book_insights']:
+            strategy_books = [
+                b for b in rag_insights['book_insights']
+                if b.get('category') in ['trading_strategy', 'technical_analysis']
+            ]
+            if strategy_books:
+                reasons.append(
+                    f"📚 {len(strategy_books)} relevant trading strategies from knowledge base"
+                )
+        
+        # Company insights
+        if rag_insights['company_insights']:
+            recent_reports = [
+                r for r in rag_insights['company_insights']
+                if r.get('year', 0) >= datetime.now().year - 2
+            ]
+            if recent_reports:
+                reasons.append(
+                    f"📄 Analysis includes {len(recent_reports)} recent company reports"
+                )
+        
+        # === TRADING STRATEGY INSIGHTS ===
+        if trading_strategy['entry_criteria']:
+            reasons.append(
+                f"✓ Found {len(trading_strategy['entry_criteria'])} entry criteria from expert strategies"
+            )
+        
+        if trading_strategy['risk_management']:
+            reasons.append(
+                f"🛡️ {len(trading_strategy['risk_management'])} risk management guidelines available"
+            )
+        
+        # === RISK WARNINGS ===
         if risk_score > 0.7:
-            warnings.append("HIGH RISK: Significant volatility and uncertainty detected")
+            warnings.append(
+                f"⚠️ HIGH RISK: Risk score {risk_score:.1%} - significant uncertainty detected"
+            )
         
         if confidence < 0.6:
-            warnings.append("LOW CONFIDENCE: Model uncertainty is high - proceed with caution")
+            warnings.append(
+                f"⚠️ LOW CONFIDENCE: Model uncertainty is high ({confidence:.1%}) - exercise caution"
+            )
         
         # Volume analysis
-        recent_volume = df['volume'].tail(5).mean()
-        avg_volume = df['volume'].mean()
-        if recent_volume > avg_volume * 1.5:
-            reasons.append("High trading volume indicates strong market interest")
-        elif recent_volume < avg_volume * 0.5:
-            warnings.append("Low trading volume may indicate weak market interest")
+        if 'volume' in df.columns:
+            recent_volume = df['volume'].tail(5).mean()
+            avg_volume = df['volume'].mean()
+            if recent_volume > avg_volume * 1.5:
+                reasons.append("📊 High trading volume - strong market interest")
+            elif recent_volume < avg_volume * 0.5:
+                warnings.append("⚠️ Low trading volume - weak market participation")
+        
+        # === RECOMMENDATIONS ===
+        if rag_insights.get('recommendations'):
+            for rec in rag_insights['recommendations'][:3]:  # Top 3
+                reasons.append(f"💡 {rec}")
         
         return reasons, warnings
     
-    async def train_model(
-        self,
-        symbols: List[str],
-        start_date: Optional[str] = None,
-        end_date: Optional[str] = None
-    ) -> Dict:
-        """Train the ML model with historical data"""
+    def _calculate_sentiment_score(self, rag_insights: Dict) -> float:
+        """Calculate sentiment score from RAG insights"""
         
-        logger.info(f"Training model with {len(symbols)} symbols")
+        sentiment_score = 0.5  # Neutral default
         
-        all_data = []
-        
-        for symbol in symbols:
-            logger.info(f"Fetching data for {symbol}")
+        # Analyze patterns
+        if rag_insights['pattern_insights']:
+            bullish_count = sum(
+                1 for p in rag_insights['pattern_insights']
+                if p.get('outcome') == 'bullish'
+            )
+            total_patterns = len(rag_insights['pattern_insights'])
             
-            candles = self.data_service.fetch_historical_data(symbol, days=730)  # 2 years
-            
-            if candles is None or len(candles) == 0:
-                logger.warning(f"Skipping {symbol} - no data available")
-                continue
-            
-            df = self.data_service.candles_to_dataframe(candles)
-            df = TechnicalAnalyzer.calculate_features(df)
-            
-            # Fetch fundamentals
-            fundamentals = self.fundamental_analyzer.fetch_fundamentals(symbol)
-            if fundamentals:
-                df['pe_ratio'] = fundamentals.pe_ratio
-                df['pb_ratio'] = fundamentals.pb_ratio
-                df['roe'] = fundamentals.roe
-                df['debt_to_equity'] = fundamentals.debt_to_equity
-                df['dividend_yield'] = fundamentals.dividend_yield
-            
-            all_data.append(df)
+            if total_patterns > 0:
+                pattern_sentiment = bullish_count / total_patterns
+                sentiment_score = (sentiment_score + pattern_sentiment) / 2
         
-        if len(all_data) == 0:
-            raise ValueError("No training data available")
-        
-        # Combine all data
-        combined_df = pd.concat(all_data, ignore_index=True)
-        logger.info(f"Total training samples: {len(combined_df)}")
-        
-        # Train model
-        metrics = self.model.train(combined_df)
-        
-        # Save model
-        self.model.save_model()
-        
-        logger.info("Model training complete")
-        
-        return {
-            "status": "success",
-            "metrics": metrics,
-            "training_symbols": symbols,
-            "total_samples": len(combined_df)
-        }
+        # Normalize to 0-1 range
+        return min(1.0, max(0.0, sentiment_score))
     
-    async def get_model_metrics(self) -> Dict:
-        """Get current model performance metrics"""
+    async def get_model_info(self) -> Dict:
+        """Get information about loaded models"""
         
-        if not self.model.is_trained:
-            return {
-                "status": "not_trained",
-                "message": "Model has not been trained yet"
+        model_info = {
+            'ensemble_trained': self.ensemble_model.is_trained,
+            'base_models': {},
+            'knowledge_base_stats': {}
+        }
+        
+        # Base model info
+        for model_name, model in self.ensemble_model.base_models.items():
+            model_info['base_models'][model_name] = {
+                'trained': model.is_trained,
+                'metrics': model.metrics if model.is_trained else {}
             }
         
-        feature_importance = self.model.get_feature_importance()
+        # Knowledge base stats
+        try:
+            kb_stats = self.rag_service.vector_store.get_collection_stats()
+            model_info['knowledge_base_stats'] = kb_stats
+        except Exception as e:
+            logger.error(f"Error getting KB stats: {str(e)}")
         
-        return {
-            "status": "trained",
-            "model_type": self.model.model_type,
-            "feature_count": len(self.model.feature_columns),
-            "top_features": feature_importance.head(10).to_dict('records') if not feature_importance.empty else []
-        }
+        return model_info
     

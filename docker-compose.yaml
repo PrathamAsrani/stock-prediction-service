@@ -2,19 +2,46 @@ version: '3.8'
 
 services:
   stock-ml-service:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: stock-ml-service
     ports:
       - "8001:8001"
     volumes:
       - ./trained_models:/app/trained_models
+      - ./knowledge_base_index:/app/knowledge_base_index
       - ./data:/app/data
+      - ./.env:/app/.env
     environment:
       - PYTHONUNBUFFERED=1
+      - LOG_LEVEL=INFO
     restart: unless-stopped
     networks:
-      - stock-network
+      - ml-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Optional: Redis for caching
+  redis:
+    image: redis:7-alpine
+    container_name: stock-ml-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - ml-network
+    restart: unless-stopped
 
 networks:
-  stock-network:
+  ml-network:
     driver: bridge
+
+volumes:
+  redis-data:
+  
