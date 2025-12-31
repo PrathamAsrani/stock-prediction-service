@@ -1,0 +1,11 @@
+// notes
+1. use python 3.10
+2. create env using python 3.10
+3. install requirements
+4. setup the .env file 
+
+// commands
+- python3.10 -m venv venv 
+- source /venv/bin/activate
+- pip install -r requirements.txt 
+- python -m uvicorn app.main:app --reload 

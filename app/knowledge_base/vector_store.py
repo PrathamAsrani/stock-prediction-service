@@ -18,13 +18,21 @@ class VectorStore:
         embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
     ):
         self.persist_directory = Path(persist_directory)
-        self.persist_directory.mkdir(exist_ok=True)
+        self.persist_directory.mkdir(exist_ok=True, parents=True)
         
-        # Initialize ChromaDB client
-        self.client = chromadb.Client(Settings(
-            chroma_db_impl="duckdb+parquet",
-            persist_directory=str(self.persist_directory)
-        ))
+        # Initialize ChromaDB client with new API
+        logger.info(f"Initializing ChromaDB at {self.persist_directory}")
+        
+        try:
+            # Use the new PersistentClient API
+            self.client = chromadb.PersistentClient(
+                path=str(self.persist_directory)
+            )
+        except Exception as e:
+            logger.error(f"Error initializing ChromaDB: {e}")
+            # Fallback to EphemeralClient for testing
+            logger.warning("Falling back to in-memory EphemeralClient")
+            self.client = chromadb.EphemeralClient()
         
         # Initialize embedding model
         logger.info(f"Loading embedding model: {embedding_model}")
@@ -44,9 +52,12 @@ class VectorStore:
         """Get or create a ChromaDB collection"""
         try:
             collection = self.client.get_collection(name=name)
-            logger.info(f"Loaded existing collection: {name}")
-        except:
-            collection = self.client.create_collection(name=name)
+            logger.info(f"Loaded existing collection: {name} with {collection.count()} documents")
+        except Exception:
+            collection = self.client.create_collection(
+                name=name,
+                metadata={"hnsw:space": "cosine"}  # Use cosine similarity
+            )
             logger.info(f"Created new collection: {name}")
         
         return collection
@@ -66,12 +77,16 @@ class VectorStore:
         
         logger.info(f"Adding {len(documents)} documents to {collection_type} collection")
         
+        # Get current count to generate unique IDs
+        current_count = collection.count()
+        
         # Prepare data for ChromaDB
         texts = [doc.page_content for doc in documents]
         metadatas = [doc.metadata for doc in documents]
-        ids = [f"{collection_type}_{i}" for i in range(len(documents))]
+        ids = [f"{collection_type}_{current_count + i}" for i in range(len(documents))]
         
         # Generate embeddings
+        logger.info("Generating embeddings...")
         embeddings = self.embedding_model.encode(texts, show_progress_bar=True).tolist()
         
         # Add to collection in batches
@@ -79,12 +94,17 @@ class VectorStore:
         for i in range(0, len(documents), batch_size):
             batch_end = min(i + batch_size, len(documents))
             
-            collection.add(
-                embeddings=embeddings[i:batch_end],
-                documents=texts[i:batch_end],
-                metadatas=metadatas[i:batch_end],
-                ids=ids[i:batch_end]
-            )
+            try:
+                collection.add(
+                    embeddings=embeddings[i:batch_end],
+                    documents=texts[i:batch_end],
+                    metadatas=metadatas[i:batch_end],
+                    ids=ids[i:batch_end]
+                )
+                logger.info(f"Added batch {i//batch_size + 1}/{(len(documents) + batch_size - 1)//batch_size}")
+            except Exception as e:
+                logger.error(f"Error adding batch: {e}")
+                continue
         
         logger.info(f"Successfully added {len(documents)} documents to {collection_type}")
     
@@ -103,19 +123,28 @@ class VectorStore:
         
         collection = self.collections[collection_type]
         
+        # Check if collection is empty
+        if collection.count() == 0:
+            logger.warning(f"Collection {collection_type} is empty")
+            return []
+        
         # Generate query embedding
         query_embedding = self.embedding_model.encode([query])[0].tolist()
         
         # Search
-        results = collection.query(
-            query_embeddings=[query_embedding],
-            n_results=n_results,
-            where=filter_metadata
-        )
+        try:
+            results = collection.query(
+                query_embeddings=[query_embedding],
+                n_results=min(n_results, collection.count()),
+                where=filter_metadata if filter_metadata else None
+            )
+        except Exception as e:
+            logger.error(f"Error searching collection {collection_type}: {e}")
+            return []
         
         # Format results
         formatted_results = []
-        if results['documents']:
+        if results['documents'] and len(results['documents']) > 0:
             for i in range(len(results['documents'][0])):
                 formatted_results.append({
                     'document': results['documents'][0][i],
@@ -157,19 +186,25 @@ class VectorStore:
         
         # If symbol is provided, also search for company-specific info
         if symbol:
-            company_results = self.search(
-                query=f"company analysis {symbol}",
-                collection_type='reports',
-                n_results=3,
-                filter_metadata={'company': symbol}
-            )
-            all_results['company_specific'] = company_results
+            try:
+                company_results = self.search(
+                    query=f"company analysis {symbol}",
+                    collection_type='reports',
+                    n_results=3,
+                    filter_metadata={'company': symbol}
+                )
+                all_results['company_specific'] = company_results
+            except Exception as e:
+                logger.warning(f"Could not search company-specific data: {e}")
         
         # Compile context
         context_parts = []
         current_tokens = 0
         
         for collection_name, results in all_results.items():
+            if not results:
+                continue
+                
             for result in results:
                 text = result['document']
                 # Rough token estimation (4 chars ≈ 1 token)
@@ -181,32 +216,59 @@ class VectorStore:
                 context_parts.append(f"[{collection_name.upper()}] {text}")
                 current_tokens += estimated_tokens
         
-        context = "\n\n".join(context_parts)
-        
-        logger.info(f"Compiled context with ~{current_tokens} tokens from {len(context_parts)} sources")
+        if context_parts:
+            context = "\n\n".join(context_parts)
+            logger.info(f"Compiled context with ~{current_tokens} tokens from {len(context_parts)} sources")
+        else:
+            context = "No relevant context found in knowledge base."
+            logger.warning("No context found in knowledge base")
         
         return context
     
     def delete_collection(self, collection_type: str):
         """Delete a collection"""
         if collection_type in self.collections:
-            self.client.delete_collection(name=collection_type)
-            logger.info(f"Deleted collection: {collection_type}")
+            try:
+                self.client.delete_collection(name=collection_type)
+                logger.info(f"Deleted collection: {collection_type}")
+                # Remove from collections dict
+                del self.collections[collection_type]
+            except Exception as e:
+                logger.error(f"Error deleting collection: {e}")
     
     def get_collection_stats(self) -> Dict:
         """Get statistics about all collections"""
         stats = {}
         
         for name, collection in self.collections.items():
-            count = collection.count()
-            stats[name] = {
-                'document_count': count
-            }
+            try:
+                count = collection.count()
+                stats[name] = {
+                    'document_count': count
+                }
+            except Exception as e:
+                logger.error(f"Error getting stats for {name}: {e}")
+                stats[name] = {
+                    'document_count': 0,
+                    'error': str(e)
+                }
         
         return stats
     
-    def persist(self):
-        """Persist the vector store to disk"""
-        self.client.persist()
-        logger.info("Vector store persisted to disk")
+    def reset_all_collections(self):
+        """Delete and recreate all collections (useful for development)"""
+        logger.warning("Resetting all collections...")
+        
+        for collection_type in list(self.collections.keys()):
+            self.delete_collection(collection_type)
+        
+        # Recreate collections
+        self.collections = {
+            'books': self._get_or_create_collection('trading_books'),
+            'reports': self._get_or_create_collection('company_reports'),
+            'patterns': self._get_or_create_collection('chart_patterns'),
+            'general': self._get_or_create_collection('general_knowledge')
+        }
+        
+        logger.info("All collections reset")
         
