@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     
     # Logging
     LOG_LEVEL: str = "INFO"
+
+    # Zerodha Microservice
+    JAVA_SERVICE_URL: str = "http://localhost:3000"
+    JAVA_SERVICE_TIMEOUT: int = 30
     
     class Config:
         env_file = ".env"

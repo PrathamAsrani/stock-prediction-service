@@ -63,3 +63,7 @@ httpx==0.25.2
 python-dotenv==1.0.0
 tqdm==4.66.1
 loguru==0.7.2
+
+# Web scraping
+beautifulsoup4==4.12.2
+lxml==4.9.3
