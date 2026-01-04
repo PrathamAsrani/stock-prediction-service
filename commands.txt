@@ -12,3 +12,16 @@
 - python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8001
 - python scripts/build_knowledge_base.py
 - python scripts/train_models.py 
+
+// swing prediction commands
+1. python scripts/build_knowledge_base.py
+2. python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8001
+3. use curl 
+curl --location 'http://localhost:8001/api/analyze/predict' \
+--header 'Content-Type: application/json' \
+--data '{
+    "symbol": "WAAREEINDO",
+    "exchange": "NSE",
+    "days_ahead": 30,
+    "target_growth": 10.0
+}'
