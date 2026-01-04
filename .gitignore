@@ -4,3 +4,4 @@ __pycache__
 .env
 chroma.sqlite3
 /data/books
+knowledge_base_index
