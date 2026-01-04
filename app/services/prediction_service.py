@@ -73,10 +73,21 @@ class StockPredictionService:
             # Step 5: Get swing trading strategy
             trading_strategy = self.rag_service.get_swing_trading_strategy(request.symbol)
             
+            # ==================== CRITICAL FIX HERE ====================
             # Step 6: Make ensemble prediction
             logger.info("Making ensemble prediction...")
-            features = self.ensemble_model.base_models['xgboost'].prepare_features(df)
+            
+            # Prepare features - exclude metadata columns only
+            # The technical features are already calculated by TechnicalAnalyzer
+            exclude_cols = ['symbol']
+            if 'target' in df.columns:
+                exclude_cols.append('target')
+            
+            # Select only numeric feature columns (all the technical indicators)
+            feature_cols = [col for col in df.columns if col not in exclude_cols]
+            features = df[feature_cols].fillna(0)  # Fill any remaining NaN with 0
             features_latest = features.tail(1)
+            # ===========================================================
             
             # Get detailed prediction breakdown
             prediction_breakdown = self.ensemble_model.predict_with_breakdown(
@@ -220,7 +231,7 @@ class StockPredictionService:
         
         # 4. Historical pattern risk (20% weight)
         pattern_risk = 0.5  # Default
-        if rag_insights['pattern_insights']:
+        if rag_insights.get('pattern_insights'):
             bearish_count = sum(
                 1 for p in rag_insights['pattern_insights']
                 if p.get('outcome') == 'bearish'
@@ -341,13 +352,13 @@ class StockPredictionService:
         
         current_price = df['close'].iloc[-1]
         if current_price > technical_indicators.sma_50:
-            reasons.append(f"✓ Price above 50-day SMA (${technical_indicators.sma_50:.2f}) - uptrend")
+            reasons.append(f"✓ Price above 50-day SMA (₹{technical_indicators.sma_50:.2f}) - uptrend")
         else:
-            warnings.append(f"⚠ Price below 50-day SMA (${technical_indicators.sma_50:.2f}) - downtrend")
+            warnings.append(f"⚠ Price below 50-day SMA (₹{technical_indicators.sma_50:.2f}) - downtrend")
         
         # === KNOWLEDGE BASE INSIGHTS ===
         # Pattern insights
-        if rag_insights['pattern_insights']:
+        if rag_insights.get('pattern_insights'):
             bullish_patterns = [p for p in rag_insights['pattern_insights'] if p.get('outcome') == 'bullish']
             bearish_patterns = [p for p in rag_insights['pattern_insights'] if p.get('outcome') == 'bearish']
             
@@ -361,7 +372,7 @@ class StockPredictionService:
                 )
         
         # Book insights
-        if rag_insights['book_insights']:
+        if rag_insights.get('book_insights'):
             strategy_books = [
                 b for b in rag_insights['book_insights']
                 if b.get('category') in ['trading_strategy', 'technical_analysis']
@@ -372,7 +383,7 @@ class StockPredictionService:
                 )
         
         # Company insights
-        if rag_insights['company_insights']:
+        if rag_insights.get('company_insights'):
             recent_reports = [
                 r for r in rag_insights['company_insights']
                 if r.get('year', 0) >= datetime.now().year - 2
@@ -383,12 +394,12 @@ class StockPredictionService:
                 )
         
         # === TRADING STRATEGY INSIGHTS ===
-        if trading_strategy['entry_criteria']:
+        if trading_strategy.get('entry_criteria'):
             reasons.append(
                 f"✓ Found {len(trading_strategy['entry_criteria'])} entry criteria from expert strategies"
             )
         
-        if trading_strategy['risk_management']:
+        if trading_strategy.get('risk_management'):
             reasons.append(
                 f"🛡️ {len(trading_strategy['risk_management'])} risk management guidelines available"
             )
@@ -426,7 +437,7 @@ class StockPredictionService:
         sentiment_score = 0.5  # Neutral default
         
         # Analyze patterns
-        if rag_insights['pattern_insights']:
+        if rag_insights.get('pattern_insights'):
             bullish_count = sum(
                 1 for p in rag_insights['pattern_insights']
                 if p.get('outcome') == 'bullish'
@@ -464,4 +475,3 @@ class StockPredictionService:
             logger.error(f"Error getting KB stats: {str(e)}")
         
         return model_info
-    

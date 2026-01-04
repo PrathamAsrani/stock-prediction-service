@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     MODEL_TYPE: str = "ensemble"  # xgboost, lstm, transformer, ensemble
     ENABLE_XGBOOST: bool = True
     ENABLE_LSTM: bool = True
-    ENABLE_TRANSFORMER: bool = True
+    ENABLE_TRANSFORMER: bool = False
     
     # Knowledge Base Settings
     KNOWLEDGE_BASE_PATH: str = "knowledge_base_index"

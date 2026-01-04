@@ -186,11 +186,15 @@ async def main():
     """Main function"""
     
     # List of stocks to analyze (can be extended)
+    # symbols = [
+    #     'RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'HINDUNILVR',
+    #     'ICICIBANK', 'KOTAKBANK', 'SBIN', 'BHARTIARTL', 'ITC',
+    #     'BAJFINANCE', 'LT', 'ASIANPAINT', 'AXISBANK', 'MARUTI',
+    #     'ADANIPORTS', 'TATAMOTORS', 'SUNPHARMA', 'TITAN', 'ULTRACEMCO'
+    # ]
     symbols = [
-        'RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'HINDUNILVR',
-        'ICICIBANK', 'KOTAKBANK', 'SBIN', 'BHARTIARTL', 'ITC',
-        'BAJFINANCE', 'LT', 'ASIANPAINT', 'AXISBANK', 'MARUTI',
-        'ADANIPORTS', 'TATAMOTORS', 'SUNPHARMA', 'TITAN', 'ULTRACEMCO'
+        'ITC',    # Has fallback data
+        'PGHL',   # Has fallback data
     ]
     
     builder = KnowledgeBaseBuilder()
