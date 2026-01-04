@@ -1,0 +1,43 @@
+{
+    "symbol": "WAAREEINDO",
+    "exchange": "NSE",
+    "prediction": {
+        "will_grow_10_percent": true,
+        "confidence": 0.7555555555555555,
+        "predicted_return": 12.555555555555555,
+        "risk_score": 0.48059191359611997,
+        "volatility": 0.040746800414168144,
+        "recommendation": "BUY"
+    },
+    "technical_indicators": {
+        "rsi": 55.19260905779728,
+        "macd": 5.854484710315319,
+        "macd_signal": -2.3072401170134382,
+        "bollinger_upper": 563.7161529859892,
+        "bollinger_lower": 384.98884701401073,
+        "sma_20": 474.35249999999996,
+        "sma_50": 487.36,
+        "ema_12": 493.52906560018266,
+        "ema_26": 487.67458088986734,
+        "volume_sma": 9700.0,
+        "atr": 26.854728178101876
+    },
+    "fundamental_score": null,
+    "sentiment_score": 0.5,
+    "current_price": 512.6,
+    "target_price": 576.9597777777778,
+    "stop_loss": 486.96999999999997,
+    "analysis_timestamp": "2026-01-04T18:18:30.791410",
+    "reasons": [
+        "Technical analysis confidence: 75.6% (9 signals)",
+        "✓ RSI in neutral zone (healthy momentum)",
+        "📈 MACD bullish crossover detected",
+        "✓ Price above 50-day SMA (₹487.36) - uptrend",
+        "📚 5 trading strategies from knowledge base",
+        "🛡️ 10 risk management guidelines",
+        "💡 Found 5 relevant technical analysis strategies applicable to this stock"
+    ],
+    "warnings": [
+        "⚠️ Using rule-based analysis - train ML models for better accuracy"
+    ]
+}
