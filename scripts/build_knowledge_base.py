@@ -167,8 +167,9 @@ class KnowledgeBaseBuilder:
         # Build patterns index
         await self.build_patterns_index(symbols)
         
-        # Persist vector store
-        self.vector_store.persist()
+        # ChromaDB PersistentClient automatically persists to disk
+        # No manual persist() call needed
+        logger.info("\n✓ Vector store automatically persisted to disk")
         
         # Show statistics
         stats = self.vector_store.get_collection_stats()
@@ -186,16 +187,17 @@ async def main():
     """Main function"""
     
     # List of stocks to analyze (can be extended)
-    # symbols = [
-    #     'RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'HINDUNILVR',
-    #     'ICICIBANK', 'KOTAKBANK', 'SBIN', 'BHARTIARTL', 'ITC',
-    #     'BAJFINANCE', 'LT', 'ASIANPAINT', 'AXISBANK', 'MARUTI',
-    #     'ADANIPORTS', 'TATAMOTORS', 'SUNPHARMA', 'TITAN', 'ULTRACEMCO'
-    # ]
+    # Using only stocks with fallback data for now
     symbols = [
         'ITC',    # Has fallback data
         'PGHL',   # Has fallback data
     ]
+    
+    # You can add more when you have data sources:
+    # 'RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'HINDUNILVR',
+    # 'ICICIBANK', 'KOTAKBANK', 'SBIN', 'BHARTIARTL',
+    # 'BAJFINANCE', 'LT', 'ASIANPAINT', 'AXISBANK', 'MARUTI',
+    # 'ADANIPORTS', 'TATAMOTORS', 'SUNPHARMA', 'TITAN', 'ULTRACEMCO'
     
     builder = KnowledgeBaseBuilder()
     
@@ -208,4 +210,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-    

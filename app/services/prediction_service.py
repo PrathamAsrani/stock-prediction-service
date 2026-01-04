@@ -32,18 +32,20 @@ class StockPredictionService:
         self.rag_service = RAGService()
         
         # Load trained model
+        self.model_trained = False
         try:
             self.ensemble_model.load()
+            self.model_trained = True
             logger.info("✓ Ensemble model loaded successfully")
         except FileNotFoundError:
-            logger.warning("⚠ No trained model found. Please train the model first.")
+            logger.warning("⚠ No trained model found. Using rule-based predictions.")
     
     async def predict_stock_growth(self, request: PredictionRequest) -> PredictionResponse:
         """
         Main prediction function with RAG-enhanced analysis
         
         Analyzes stock using:
-        1. Ensemble ML predictions (XGBoost + LSTM + Transformer)
+        1. Ensemble ML predictions (XGBoost + LSTM + Transformer) OR rule-based fallback
         2. Technical analysis
         3. Knowledge base insights (books, reports, patterns)
         4. Historical pattern matching
@@ -73,29 +75,19 @@ class StockPredictionService:
             # Step 5: Get swing trading strategy
             trading_strategy = self.rag_service.get_swing_trading_strategy(request.symbol)
             
-            # ==================== CRITICAL FIX HERE ====================
-            # Step 6: Make ensemble prediction
-            logger.info("Making ensemble prediction...")
+            # Step 6: Make prediction (ML or rule-based)
+            logger.info("Making prediction...")
             
-            # Prepare features - exclude metadata columns only
-            # The technical features are already calculated by TechnicalAnalyzer
-            exclude_cols = ['symbol']
-            if 'target' in df.columns:
-                exclude_cols.append('target')
+            if self.model_trained:
+                # Use ML ensemble model
+                prediction_breakdown = self._get_ml_prediction(df, request.symbol)
+            else:
+                # Use rule-based prediction
+                prediction_breakdown = self._get_rule_based_prediction(
+                    df, technical_indicators, rag_insights
+                )
             
-            # Select only numeric feature columns (all the technical indicators)
-            feature_cols = [col for col in df.columns if col not in exclude_cols]
-            features = df[feature_cols].fillna(0)  # Fill any remaining NaN with 0
-            features_latest = features.tail(1)
-            # ===========================================================
-            
-            # Get detailed prediction breakdown
-            prediction_breakdown = self.ensemble_model.predict_with_breakdown(
-                features_latest,
-                symbols=[request.symbol]
-            )
-            
-            # Extract ensemble prediction
+            # Extract prediction results
             ensemble_pred = prediction_breakdown['ensemble_prediction']
             ensemble_prob = prediction_breakdown['ensemble_probability']
             
@@ -145,7 +137,8 @@ class StockPredictionService:
                 df=df,
                 rag_insights=rag_insights,
                 prediction_breakdown=prediction_breakdown,
-                trading_strategy=trading_strategy
+                trading_strategy=trading_strategy,
+                model_trained=self.model_trained
             )
             
             # Step 12: Calculate sentiment score from knowledge base
@@ -167,7 +160,7 @@ class StockPredictionService:
                 exchange=request.exchange,
                 prediction=prediction_result,
                 technical_indicators=technical_indicators,
-                fundamental_score=None,  # Can be enhanced with fundamental data
+                fundamental_score=None,
                 sentiment_score=sentiment_score,
                 current_price=current_price,
                 target_price=target_price,
@@ -184,6 +177,157 @@ class StockPredictionService:
         except Exception as e:
             logger.error(f"Error in prediction: {str(e)}")
             raise
+    
+    def _get_ml_prediction(self, df: pd.DataFrame, symbol: str) -> Dict:
+        """Get prediction from trained ML ensemble model"""
+        
+        # Prepare features - exclude metadata columns
+        exclude_cols = ['symbol']
+        if 'target' in df.columns:
+            exclude_cols.append('target')
+        
+        feature_cols = [col for col in df.columns if col not in exclude_cols]
+        features = df[feature_cols].fillna(0)
+        features_latest = features.tail(1)
+        
+        # Get detailed prediction breakdown
+        prediction_breakdown = self.ensemble_model.predict_with_breakdown(
+            features_latest,
+            symbols=[symbol]
+        )
+        
+        return prediction_breakdown
+    
+    def _get_rule_based_prediction(
+        self,
+        df: pd.DataFrame,
+        technical_indicators: TechnicalIndicators,
+        rag_insights: Dict
+    ) -> Dict:
+        """
+        Rule-based prediction when ML models aren't trained
+        
+        Uses technical analysis and pattern recognition
+        """
+        logger.info("Using rule-based prediction (no trained models)")
+        
+        # Initialize scores
+        bullish_score = 0
+        total_signals = 0
+        
+        # === TECHNICAL INDICATOR SIGNALS ===
+        
+        # RSI Signal (weight: 2)
+        if technical_indicators.rsi < 30:
+            bullish_score += 2  # Oversold - bullish
+            total_signals += 2
+        elif technical_indicators.rsi > 70:
+            bullish_score += 0  # Overbought - bearish
+            total_signals += 2
+        elif 40 <= technical_indicators.rsi <= 60:
+            bullish_score += 1  # Neutral
+            total_signals += 2
+        else:
+            bullish_score += 1
+            total_signals += 2
+        
+        # MACD Signal (weight: 2)
+        if technical_indicators.macd > technical_indicators.macd_signal:
+            bullish_score += 2  # Bullish crossover
+            total_signals += 2
+        else:
+            bullish_score += 0  # Bearish
+            total_signals += 2
+        
+        # Moving Average Signal (weight: 2)
+        current_price = df['close'].iloc[-1]
+        if current_price > technical_indicators.sma_50:
+            bullish_score += 2  # Above 50-day MA - bullish
+            total_signals += 2
+        else:
+            bullish_score += 0  # Below 50-day MA - bearish
+            total_signals += 2
+        
+        # Bollinger Bands Signal (weight: 1)
+        if current_price < technical_indicators.bollinger_lower:
+            bullish_score += 1  # Near lower band - oversold
+            total_signals += 1
+        elif current_price > technical_indicators.bollinger_upper:
+            bullish_score += 0  # Near upper band - overbought
+            total_signals += 1
+        else:
+            bullish_score += 0.5  # In middle
+            total_signals += 1
+        
+        # Price Momentum (weight: 1)
+        if 'returns' in df.columns:
+            recent_returns = df['returns'].tail(5).mean()
+            if recent_returns > 0.01:  # Positive momentum
+                bullish_score += 1
+                total_signals += 1
+            elif recent_returns < -0.01:  # Negative momentum
+                bullish_score += 0
+                total_signals += 1
+            else:
+                bullish_score += 0.5
+                total_signals += 1
+        
+        # Volume Trend (weight: 1)
+        if 'volume' in df.columns:
+            recent_volume = df['volume'].tail(5).mean()
+            avg_volume = df['volume'].mean()
+            if recent_volume > avg_volume * 1.2:  # High volume
+                bullish_score += 1
+                total_signals += 1
+            else:
+                bullish_score += 0.3
+                total_signals += 1
+        
+        # === PATTERN RECOGNITION ===
+        
+        # Historical patterns from RAG (weight: 2)
+        if rag_insights.get('pattern_insights'):
+            bullish_patterns = sum(
+                1 for p in rag_insights['pattern_insights']
+                if p.get('outcome') == 'bullish'
+            )
+            bearish_patterns = sum(
+                1 for p in rag_insights['pattern_insights']
+                if p.get('outcome') == 'bearish'
+            )
+            total_patterns = bullish_patterns + bearish_patterns
+            
+            if total_patterns > 0:
+                pattern_ratio = bullish_patterns / total_patterns
+                bullish_score += pattern_ratio * 2
+                total_signals += 2
+        
+        # === CALCULATE FINAL PREDICTION ===
+        
+        # Convert to probability (0-1)
+        confidence = bullish_score / total_signals if total_signals > 0 else 0.5
+        
+        # Binary prediction
+        prediction = 1 if confidence > 0.5 else 0
+        
+        # Create breakdown similar to ML model
+        prediction_breakdown = {
+            'ensemble_prediction': prediction,
+            'ensemble_probability': confidence,
+            'base_predictions': {
+                'rule_based': {
+                    'prediction': prediction,
+                    'probability': confidence,
+                    'method': 'technical_analysis',
+                    'signals_used': total_signals,
+                    'bullish_score': bullish_score
+                }
+            }
+        }
+        
+        logger.info(f"Rule-based prediction: {prediction} (confidence: {confidence:.2%})")
+        
+        return prediction_breakdown
     
     async def _get_historical_data(self, request: PredictionRequest) -> List[CandleData]:
         """Get historical data from request or fetch from API"""
@@ -317,7 +461,8 @@ class StockPredictionService:
         df: pd.DataFrame,
         rag_insights: Dict,
         prediction_breakdown: Dict,
-        trading_strategy: Dict
+        trading_strategy: Dict,
+        model_trained: bool = False
     ) -> tuple:
         """Generate comprehensive reasons and warnings using all available data"""
         
@@ -325,16 +470,22 @@ class StockPredictionService:
         warnings = []
         
         # === MODEL INSIGHTS ===
-        ensemble_conf = prediction_breakdown['ensemble_probability']
-        reasons.append(f"Ensemble model confidence: {ensemble_conf:.1%}")
-        
-        # Individual model insights
-        for model_name, pred_data in prediction_breakdown['base_predictions'].items():
-            prob = pred_data.get('probability', 0)
-            if prob:
-                reasons.append(
-                    f"{model_name.upper()} model: {prob:.1%} confidence"
-                )
+        if model_trained:
+            ensemble_conf = prediction_breakdown['ensemble_probability']
+            reasons.append(f"Ensemble ML model confidence: {ensemble_conf:.1%}")
+            
+            # Individual model insights
+            for model_name, pred_data in prediction_breakdown['base_predictions'].items():
+                prob = pred_data.get('probability', 0)
+                if prob:
+                    reasons.append(f"{model_name.upper()}: {prob:.1%} confidence")
+        else:
+            # Rule-based insights
+            rule_data = prediction_breakdown['base_predictions'].get('rule_based', {})
+            confidence_pct = rule_data.get('probability', 0) * 100
+            signals = rule_data.get('signals_used', 0)
+            reasons.append(f"Technical analysis confidence: {confidence_pct:.1f}% ({signals} signals)")
+            warnings.append("⚠️ Using rule-based analysis - train ML models for better accuracy")
         
         # === TECHNICAL INSIGHTS ===
         rsi = technical_indicators.rsi
@@ -357,76 +508,52 @@ class StockPredictionService:
             warnings.append(f"⚠ Price below 50-day SMA (₹{technical_indicators.sma_50:.2f}) - downtrend")
         
         # === KNOWLEDGE BASE INSIGHTS ===
-        # Pattern insights
         if rag_insights.get('pattern_insights'):
             bullish_patterns = [p for p in rag_insights['pattern_insights'] if p.get('outcome') == 'bullish']
             bearish_patterns = [p for p in rag_insights['pattern_insights'] if p.get('outcome') == 'bearish']
             
             if len(bullish_patterns) > len(bearish_patterns):
-                reasons.append(
-                    f"📊 Historical analysis: {len(bullish_patterns)} bullish vs {len(bearish_patterns)} bearish patterns"
-                )
+                reasons.append(f"📊 {len(bullish_patterns)} bullish vs {len(bearish_patterns)} bearish patterns")
             elif len(bearish_patterns) > len(bullish_patterns):
-                warnings.append(
-                    f"📊 Historical analysis: {len(bearish_patterns)} bearish vs {len(bullish_patterns)} bullish patterns"
-                )
+                warnings.append(f"📊 {len(bearish_patterns)} bearish vs {len(bullish_patterns)} bullish patterns")
         
-        # Book insights
         if rag_insights.get('book_insights'):
-            strategy_books = [
-                b for b in rag_insights['book_insights']
-                if b.get('category') in ['trading_strategy', 'technical_analysis']
-            ]
+            strategy_books = [b for b in rag_insights['book_insights'] 
+                            if b.get('category') in ['trading_strategy', 'technical_analysis']]
             if strategy_books:
-                reasons.append(
-                    f"📚 {len(strategy_books)} relevant trading strategies from knowledge base"
-                )
+                reasons.append(f"📚 {len(strategy_books)} trading strategies from knowledge base")
         
-        # Company insights
         if rag_insights.get('company_insights'):
-            recent_reports = [
-                r for r in rag_insights['company_insights']
-                if r.get('year', 0) >= datetime.now().year - 2
-            ]
+            recent_reports = [r for r in rag_insights['company_insights'] 
+                            if r.get('year', 0) >= datetime.now().year - 2]
             if recent_reports:
-                reasons.append(
-                    f"📄 Analysis includes {len(recent_reports)} recent company reports"
-                )
+                reasons.append(f"📄 {len(recent_reports)} recent company reports analyzed")
         
         # === TRADING STRATEGY INSIGHTS ===
         if trading_strategy.get('entry_criteria'):
-            reasons.append(
-                f"✓ Found {len(trading_strategy['entry_criteria'])} entry criteria from expert strategies"
-            )
+            reasons.append(f"✓ {len(trading_strategy['entry_criteria'])} entry criteria available")
         
         if trading_strategy.get('risk_management'):
-            reasons.append(
-                f"🛡️ {len(trading_strategy['risk_management'])} risk management guidelines available"
-            )
+            reasons.append(f"🛡️ {len(trading_strategy['risk_management'])} risk management guidelines")
         
         # === RISK WARNINGS ===
         if risk_score > 0.7:
-            warnings.append(
-                f"⚠️ HIGH RISK: Risk score {risk_score:.1%} - significant uncertainty detected"
-            )
+            warnings.append(f"⚠️ HIGH RISK: Risk score {risk_score:.1%}")
         
         if confidence < 0.6:
-            warnings.append(
-                f"⚠️ LOW CONFIDENCE: Model uncertainty is high ({confidence:.1%}) - exercise caution"
-            )
+            warnings.append(f"⚠️ LOW CONFIDENCE: {confidence:.1%} - exercise caution")
         
         # Volume analysis
         if 'volume' in df.columns:
             recent_volume = df['volume'].tail(5).mean()
             avg_volume = df['volume'].mean()
             if recent_volume > avg_volume * 1.5:
-                reasons.append("📊 High trading volume - strong market interest")
+                reasons.append("📊 High trading volume - strong interest")
             elif recent_volume < avg_volume * 0.5:
-                warnings.append("⚠️ Low trading volume - weak market participation")
+                warnings.append("⚠️ Low trading volume - weak participation")
         
-        # === RECOMMENDATIONS ===
         if rag_insights.get('recommendations'):
-            for rec in rag_insights['recommendations'][:3]:  # Top 3
+            for rec in rag_insights['recommendations'][:3]:
                 reasons.append(f"💡 {rec}")
         
         return reasons, warnings
@@ -436,7 +563,6 @@ class StockPredictionService:
         
         sentiment_score = 0.5  # Neutral default
         
-        # Analyze patterns
         if rag_insights.get('pattern_insights'):
             bullish_count = sum(
                 1 for p in rag_insights['pattern_insights']
@@ -448,7 +574,6 @@ class StockPredictionService:
                 pattern_sentiment = bullish_count / total_patterns
                 sentiment_score = (sentiment_score + pattern_sentiment) / 2
         
-        # Normalize to 0-1 range
         return min(1.0, max(0.0, sentiment_score))
     
     async def get_model_info(self) -> Dict:
@@ -456,18 +581,17 @@ class StockPredictionService:
         
         model_info = {
             'ensemble_trained': self.ensemble_model.is_trained,
+            'prediction_mode': 'ML' if self.model_trained else 'rule_based',
             'base_models': {},
             'knowledge_base_stats': {}
         }
         
-        # Base model info
         for model_name, model in self.ensemble_model.base_models.items():
             model_info['base_models'][model_name] = {
                 'trained': model.is_trained,
                 'metrics': model.metrics if model.is_trained else {}
             }
         
-        # Knowledge base stats
         try:
             kb_stats = self.rag_service.vector_store.get_collection_stats()
             model_info['knowledge_base_stats'] = kb_stats
@@ -475,3 +599,4 @@ class StockPredictionService:
             logger.error(f"Error getting KB stats: {str(e)}")
         
         return model_info
+        

@@ -11,8 +11,8 @@ class Settings(BaseSettings):
     
     # Model Settings
     MODEL_TYPE: str = "ensemble"  # xgboost, lstm, transformer, ensemble
-    ENABLE_XGBOOST: bool = True
-    ENABLE_LSTM: bool = True
+    ENABLE_XGBOOST: bool = False
+    ENABLE_LSTM: bool = False
     ENABLE_TRANSFORMER: bool = False
     
     # Knowledge Base Settings
@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     # Database
     REDIS_HOST: str = "localhost"
     REDIS_PORT: int = 6379
-    ENABLE_CACHING: bool = True
+    ENABLE_CACHING: bool = False
     CACHE_TTL: int = 3600
     
     # Logging
