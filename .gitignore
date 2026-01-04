@@ -3,5 +3,5 @@ venv/
 __pycache__
 .env
 chroma.sqlite3
-data/books
+data
 knowledge_base_index
